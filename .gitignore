@@ -1,0 +1,63 @@
+# Binary and executable files
+/grind_review_bot
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+/vendor/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables and secrets
+.env
+*.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Log files
+*.log
+/logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# Temporary files
+/tmp/
+/temp/
+
+# Build output
+/bin/
+/dist/
+
+# Compiled Go files
+*.o
+*.a
+
+# Configuration files with secrets
+/config/config.local.yaml
+
+# If using vgo
+go.sum
+
+# Ignore any local development notes
+/notes/

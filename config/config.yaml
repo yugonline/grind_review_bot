@@ -1,0 +1,27 @@
+discord:
+  token: "" # Set via environment variable GRIND_REVIEW_DISCORD_TOKEN or DISCORD_BOT_TOKEN
+  guild_id: "" # For testing with a specific guild, empty for global commands
+  commands_timeout: 5s
+  interaction_expiry: 15m
+
+database:
+  driver: sqlite3
+  dsn: grind_review.db
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_life: 1h
+  query_timeout: 30s
+  migrations_path: ./internal/database/migrations
+
+scheduler:
+  review_time: "08:00"
+  review_channel: "channel_id_here"
+  retry_attempts: 3
+  retry_delay: 2s
+  lookback_period: 24h
+
+metrics:
+  enabled: false
+  address: ":9090"
+
+log_level: info
