@@ -1,6 +1,7 @@
 # Binary and executable files
 /grind_review_bot
 *.exe
+secrets.txt
 *.exe~
 *.dll
 *.so

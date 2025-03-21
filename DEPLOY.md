@@ -1,20 +1,27 @@
-# Deploying Your Discord LeetCode Bot: Step-by-Step Guide
+# Deploying Your Private Discord LeetCode Bot: Step-by-Step Guide
 
-Here's a complete guide to deploy your bot from scratch:
+Here's a complete guide to deploy your private bot from scratch:
 
 ## 1. Create a Discord Bot
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. Click "New Application" and name it (e.g., "Grind Review Bot")
 3. Go to the "Bot" tab and click "Add Bot"
-4. Under "Privileged Gateway Intents", enable:
-   - SERVER MEMBERS INTENT
-   - MESSAGE CONTENT INTENT
+4. Configure your bot to be private and secure:
+   - **Toggle OFF "Public Bot"** (to make it private, only you can add it)
+   - Under "Privileged Gateway Intents", enable:
+     - SERVER MEMBERS INTENT (required to verify server membership)
+     - MESSAGE CONTENT INTENT (required to read command content)
 5. Copy your bot token (you'll need this later)
 6. Go to "OAuth2" → "URL Generator"
 7. Select scopes: `bot` and `applications.commands`
-8. Bot permissions: `Send Messages`, `Use Slash Commands`, `Read Messages/View Channels`
+8. Bot permissions: 
+   - `Send Messages`
+   - `Use Slash Commands` 
+   - `Read Messages/View Channels`
+   - `Mention Everyone` (to tag everyone in review notifications)
 9. Copy the generated URL and open it in your browser to invite the bot to your server
+10. Create a channel named `#review_log` in your server - this will be the dedicated channel for bot commands
 
 ## 2. Set Up GitHub Repository
 
@@ -41,7 +48,8 @@ Here's a complete guide to deploy your bot from scratch:
    ```yaml
    discord:
      token: "" # Leave empty, will be set via environment variable
-     guild_id: "YOUR_DISCORD_SERVER_ID" # Optional, for testing with a specific server
+     guild_id: "YOUR_DISCORD_SERVER_ID" # Required for private server-only bot
+     review_channel_id: "YOUR_REVIEW_CHANNEL_ID" # Required - ID of the #review_log channel
      commands_timeout: 5s
      interaction_expiry: 15m
 
@@ -73,9 +81,11 @@ Here's a complete guide to deploy your bot from scratch:
    mkdir -p data
    ```
 
-2. Set your Discord token as an environment variable:
+2. Set your Discord token and channel information as environment variables:
    ```bash
    export DISCORD_BOT_TOKEN=your_token_here
+   export GRIND_REVIEW_DISCORD_GUILD_ID=your_server_id
+   export GRIND_REVIEW_DISCORD_REVIEW_CHANNEL_ID=your_review_channel_id
    ```
 
 3. Download dependencies:
@@ -122,6 +132,8 @@ Here's a complete guide to deploy your bot from scratch:
    ExecStart=/path/to/bot/grind_review_bot
    Restart=on-failure
    Environment=DISCORD_BOT_TOKEN=your_token_here
+   Environment=GRIND_REVIEW_DISCORD_GUILD_ID=your_server_id
+   Environment=GRIND_REVIEW_DISCORD_REVIEW_CHANNEL_ID=your_review_channel_id
 
    [Install]
    WantedBy=multi-user.target
@@ -150,6 +162,8 @@ Here's a complete guide to deploy your bot from scratch:
    ```bash
    docker run -d \
      -e DISCORD_BOT_TOKEN=your_token_here \
+     -e GRIND_REVIEW_DISCORD_GUILD_ID=your_server_id \
+     -e GRIND_REVIEW_DISCORD_REVIEW_CHANNEL_ID=your_review_channel_id \
      -v grind_review_data:/app/data \
      --name grind_review_bot \
      --restart unless-stopped \
@@ -182,7 +196,10 @@ Here's a complete guide to deploy your bot from scratch:
 
 - The bot stores data in a SQLite database, which is perfect for personal/small Discord servers
 - Each user's problems are stored separately by their Discord ID
+- Commands only work in the designated #review_log channel (configured via review_channel_id)
+- Only members of your server can use the commands (private bot functionality)
 - The daily review scheduler will send reminders at the configured time
+- The bot can tag everyone in the designated channel for reviews
 - The bot is designed to be per-server, not public, so your LeetCode progress is private
 
 ## Security Notes

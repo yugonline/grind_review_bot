@@ -58,14 +58,14 @@ func (s *Scheduler) sendDailyReviewReminder(ctx context.Context) {
 		return
 	}
 
-	users, err := s.bot.db.ListAllUsers(ctx) // Assuming you have a way to list all users who have added problems
+	users, err := s.bot.repo.ListAllUsers(ctx) // Get all users who have added problems
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list users for review reminders")
 		return
 	}
 
 	for _, userID := range users {
-		problems, err := s.bot.db.ListProblemsForReview(ctx, userID, s.config.LookbackPeriod)
+		problems, err := s.bot.repo.ListProblemsForReview(ctx, userID, s.config.LookbackPeriod)
 		if err != nil {
 			log.Error().Err(err).Str("user_id", userID).Msg("Failed to list problems for review")
 			continue
@@ -92,7 +92,7 @@ func (s *Scheduler) sendDailyReviewReminder(ctx context.Context) {
 			_, err = s.bot.session.ChannelMessageSend(s.config.ReviewChannel, sb.String())
 			if err != nil {
 				log.Error().Err(err).Str("channel_id", s.config.ReviewChannel).Str("user_id", userID).Msg("Failed to send review reminder")
-				// Implement retry logic if needed, based on s.config.RetryAttempts and s.config.RetryDelay
+				// Implement retry logic if needed
 				for i := 0; i < s.config.RetryAttempts; i++ {
 					time.Sleep(s.config.RetryDelay)
 					_, retryErr := s.bot.session.ChannelMessageSend(s.config.ReviewChannel, sb.String())
@@ -106,8 +106,8 @@ func (s *Scheduler) sendDailyReviewReminder(ctx context.Context) {
 				log.Info().Str("channel_id", s.config.ReviewChannel).Str("user_id", userID).Int("problem_count", len(problems)).Msg("Sent daily review reminder")
 				// Update last reviewed at for these problems to avoid repeated reminders too soon
 				for _, p := range problems {
-					if err := s.bot.db.IncrementReviewCount(ctx, p.ID); err != nil {
-						log.Error().Err(err).Int("problem_id", p.ID).Msg("Failed to update review count")
+					if err := s.bot.repo.IncrementReviewCount(ctx, p.ID); err != nil {
+						log.Error().Err(err).Uint("problem_id", p.ID).Msg("Failed to update review count")
 					}
 				}
 			}

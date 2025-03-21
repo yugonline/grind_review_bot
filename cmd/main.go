@@ -50,20 +50,19 @@ func main() {
 		defer metricsServer.Stop(ctx)
 	}
 
-	// Initialize database
-	db, err := database.New(ctx, cfg.Database)
+	// Initialize database repository
+	repo, err := database.New(ctx, cfg.Database)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize database")
+		log.Fatal().Err(err).Msg("Failed to initialize database repository")
 	}
-	defer db.Close()
 
 	// Run database migrations
-	if err := database.Migrate(ctx, db); err != nil {
+	if err := database.Migrate(ctx, repo); err != nil {
 		log.Fatal().Err(err).Msg("Failed to run database migrations")
 	}
 
 	// Create and set up Discord bot
-	discordBot, err := bot.New(ctx, cfg.Discord, db)
+	discordBot, err := bot.New(ctx, cfg.Discord, repo)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create Discord bot")
 	}

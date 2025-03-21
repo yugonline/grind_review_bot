@@ -1,9 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/viper"
@@ -22,6 +22,7 @@ type Config struct {
 type DiscordConfig struct {
 	Token             string        `mapstructure:"token"`
 	GuildID           string        `mapstructure:"guild_id"`
+	ReviewChannelID   string        `mapstructure:"review_channel_id"` // Channel ID where commands are allowed
 	CommandsTimeout   time.Duration `mapstructure:"commands_timeout"`
 	InteractionExpiry time.Duration `mapstructure:"interaction_expiry"`
 }
@@ -57,44 +58,33 @@ func Load() (*Config, error) {
 	// Set defaults first
 	setDefaults()
 
-	// Try to read from config file if it exists
-	configPaths := []string{
-		".",
-		"./config",
-		"/etc/grind_review_bot",
+	fmt.Print("DISCORD_BOT_TOKEN = ", os.Getenv("DISCORD_BOT_TOKEN"))
+
+	// Read and expand config.yaml from ./config/
+	raw, err := os.ReadFile("./config/config.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config.yaml: %w", err)
 	}
 
-	for _, path := range configPaths {
-		viper.AddConfigPath(path)
-	}
+	// Expand environment variables like ${DISCORD_BOT_TOKEN}
+	expanded := os.ExpandEnv(string(raw))
 
-	viper.SetConfigName("config")
+	fmt.Println("Expanded YAML:\n", expanded)
+
+	// Load the expanded content into Viper
 	viper.SetConfigType("yaml")
-
-	// Read from environment variables too
-	viper.AutomaticEnv()
-	viper.SetEnvPrefix("GRIND_REVIEW")
-
-	// Try to read the config file
-	if err := viper.ReadInConfig(); err != nil {
-		// It's okay if config file doesn't exist, we might use env vars
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			return nil, fmt.Errorf("error reading config file: %w", err)
-		}
+	if err := viper.ReadConfig(bytes.NewBufferString(expanded)); err != nil {
+		return nil, fmt.Errorf("failed to parse expanded config: %w", err)
 	}
 
-	// Unmarshal config
+	// Unmarshal into your config struct
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("unable to decode config: %w", err)
 	}
+	fmt.Println(config)
 
-	// Override token from environment if set
-	if token := os.Getenv("DISCORD_BOT_TOKEN"); token != "" {
-		config.Discord.Token = token
-	}
-
-	// Validate config
+	// Validate
 	if config.Discord.Token == "" {
 		return nil, fmt.Errorf("Discord bot token is required")
 	}

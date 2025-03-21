@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 	"github.com/yugonline/grind_review_bot/internal/database"
 )
 
-// commandHandlers holds the mapping of command names to their handler functions
+// Error constants
 var (
 	ErrInvalidDateFormat = fmt.Errorf("invalid date format, please use YYYY-MM-DD")
 )
@@ -24,7 +23,6 @@ func (b *Bot) registerCommandHandlers() {
 		"get":    b.handleGetCommand,
 		"edit":   b.handleEditCommand,
 		"delete": b.handleDeleteCommand,
-		"stats":  b.handleStatsCommand,
 	}
 }
 
@@ -44,15 +42,26 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		return errorResponse(ErrInvalidDateFormat.Error()), nil
 	}
 
+	// Initialize problem with required fields
 	problem := &database.ProblemEntry{
 		UserID:      i.Member.User.ID,
 		ProblemName: optionMap["name"].StringValue(),
-		Link:        optionMap["link"].StringValue(),
 		Difficulty:  optionMap["difficulty"].StringValue(),
 		Category:    optionMap["category"].StringValue(),
 		Status:      optionMap["status"].StringValue(),
 		SolvedAt:    solvedAt,
-		Notes:       optionMap["notes"].StringValue(),
+		Link:        "", // Default empty string for optional fields
+		Notes:       "",
+		Tags:        make([]string, 0),
+	}
+
+	// Add optional fields if they exist
+	if linkOpt, ok := optionMap["link"]; ok {
+		problem.Link = linkOpt.StringValue()
+	}
+
+	if notesOpt, ok := optionMap["notes"]; ok {
+		problem.Notes = notesOpt.StringValue()
 	}
 
 	if tagsOpt, ok := optionMap["tags"]; ok && tagsOpt.StringValue() != "" {
@@ -63,9 +72,9 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		problem.Tags = tagStrings
 	}
 
-	err = b.db.InsertProblem(context.Background(), problem)
+	err = b.repo.CreateProblem(context.Background(), problem)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to insert problem")
+		log.Error().Err(err).Msg("Failed to create problem")
 		return errorResponse("Failed to add problem to the database."), nil
 	}
 
@@ -92,6 +101,11 @@ func (b *Bot) handleListCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		category = categoryOpt.StringValue()
 	}
 
+	limit := 10
+	if limitOpt, ok := optionMap["limit"]; ok {
+		limit = int(limitOpt.IntValue())
+	}
+
 	var tags []string
 	if tagsOpt, ok := optionMap["tags"]; ok && tagsOpt.StringValue() != "" {
 		tagStrings := strings.Split(tagsOpt.StringValue(), ",")
@@ -101,26 +115,43 @@ func (b *Bot) handleListCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		tags = tagStrings
 	}
 
-	problems, err := b.db.ListProblems(context.Background(), i.Member.User.ID, status, difficulty, category, tags, 0, 0)
+	// Get problems
+	problems, err := b.repo.ListProblems(
+		context.Background(),
+		i.Member.User.ID,
+		status,
+		difficulty,
+		category,
+		tags,
+		limit,
+		0, // No offset for simple listing
+	)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list problems")
-		return errorResponse("Failed to retrieve your problem list."), nil
+		return errorResponse("Failed to retrieve problems from the database."), nil
 	}
 
 	if len(problems) == 0 {
-		return messageResponse("You haven't added any problems yet, or no problems match your filter."), nil
+		return messageResponse("No problems found matching your criteria."), nil
 	}
 
+	// Format problems as a table
 	var sb strings.Builder
-	sb.WriteString("Your Solved LeetCode Problems:\n")
+	sb.WriteString("Your Problems:\n```\n")
+	sb.WriteString(fmt.Sprintf("%-5s | %-30s | %-8s | %-15s | %-10s | %-20s\n", "ID", "Name", "Status", "Category", "Difficulty", "Solved At"))
+	sb.WriteString(strings.Repeat("-", 100) + "\n")
+
 	for _, p := range problems {
-		sb.WriteString(fmt.Sprintf("- ID: %d, Name: %s, Difficulty: %s, Status: %s, Solved At: %s",
-			p.ID, p.ProblemName, p.Difficulty, p.Status, p.SolvedAt.Format("2006-01-02")))
-		if len(p.Tags) > 0 {
-			sb.WriteString(fmt.Sprintf(", Tags: %s", strings.Join(p.Tags, ", ")))
-		}
-		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%-5d | %-30s | %-8s | %-15s | %-10s | %-20s\n",
+			p.ID,
+			truncateString(p.ProblemName, 28),
+			truncateString(p.Status, 8),
+			truncateString(p.Category, 15),
+			truncateString(p.Difficulty, 10),
+			p.SolvedAt.Format("2006-01-02"),
+		))
 	}
+	sb.WriteString("```")
 
 	return messageResponse(sb.String()), nil
 }
@@ -132,37 +163,45 @@ func (b *Bot) handleGetCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		optionMap[opt.Name] = opt
 	}
 
-	idOpt, ok := optionMap["id"]
-	if !ok {
-		return errorResponse("Missing problem ID."), nil
-	}
-	problemID := int(idOpt.IntValue())
-
-	problem, err := b.db.GetProblem(context.Background(), problemID)
+	problemID := uint(optionMap["id"].IntValue())
+	problem, err := b.repo.GetProblem(context.Background(), problemID)
 	if err != nil {
-		log.Error().Err(err).Int("problem_id", problemID).Msg("Failed to get problem")
-		return errorResponse(fmt.Sprintf("Could not find problem with ID %d.", problemID)), nil
+		log.Error().Err(err).Uint("id", problemID).Msg("Failed to get problem")
+		return errorResponse(fmt.Sprintf("Problem with ID %d not found or you don't have permission to view it.", problemID)), nil
 	}
 
+	// Check if the user is the owner of the problem
+	if problem.UserID != i.Member.User.ID {
+		return errorResponse("You don't have permission to view this problem."), nil
+	}
+
+	// Format problem details
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Problem ID: %d\n", problem.ID))
-	sb.WriteString(fmt.Sprintf("Name: %s\n", problem.ProblemName))
+	sb.WriteString(fmt.Sprintf("# Problem: %s\n", problem.ProblemName))
+	sb.WriteString(fmt.Sprintf("**Difficulty:** %s\n", problem.Difficulty))
+	sb.WriteString(fmt.Sprintf("**Category:** %s\n", problem.Category))
+	sb.WriteString(fmt.Sprintf("**Status:** %s\n", problem.Status))
+	sb.WriteString(fmt.Sprintf("**Solved On:** %s\n", problem.SolvedAt.Format("2006-01-02")))
+
 	if problem.Link != "" {
-		sb.WriteString(fmt.Sprintf("Link: %s\n", problem.Link))
+		sb.WriteString(fmt.Sprintf("**Link:** %s\n", problem.Link))
 	}
-	sb.WriteString(fmt.Sprintf("Difficulty: %s\n", problem.Difficulty))
-	sb.WriteString(fmt.Sprintf("Category: %s\n", problem.Category))
-	sb.WriteString(fmt.Sprintf("Status: %s\n", problem.Status))
-	sb.WriteString(fmt.Sprintf("Solved At: %s\n", problem.SolvedAt.Format("2006-01-02")))
-	if problem.LastReviewedAt != nil {
-		sb.WriteString(fmt.Sprintf("Last Reviewed At: %s\n", problem.LastReviewedAt.Format("2006-01-02")))
-	}
-	sb.WriteString(fmt.Sprintf("Review Count: %d\n", problem.ReviewCount))
-	if problem.Notes != "" {
-		sb.WriteString(fmt.Sprintf("Notes: %s\n", problem.Notes))
-	}
+
 	if len(problem.Tags) > 0 {
-		sb.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(problem.Tags, ", ")))
+		sb.WriteString(fmt.Sprintf("**Tags:** %s\n", strings.Join(problem.Tags, ", ")))
+	}
+
+	if problem.LastReviewedAt != nil {
+		sb.WriteString(fmt.Sprintf("**Last Reviewed:** %s\n", problem.LastReviewedAt.Format("2006-01-02")))
+		sb.WriteString(fmt.Sprintf("**Review Count:** %d\n", problem.ReviewCount))
+	} else {
+		sb.WriteString("**Last Reviewed:** Never\n")
+		sb.WriteString("**Review Count:** 0\n")
+	}
+
+	if problem.Notes != "" {
+		sb.WriteString("\n**Notes:**\n")
+		sb.WriteString(problem.Notes)
 	}
 
 	return messageResponse(sb.String()), nil
@@ -175,67 +214,64 @@ func (b *Bot) handleEditCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		optionMap[opt.Name] = opt
 	}
 
-	idOpt, ok := optionMap["id"]
-	if !ok {
-		return errorResponse("Missing problem ID to edit."), nil
-	}
-	problemID := int(idOpt.IntValue())
+	problemID := uint(optionMap["id"].IntValue())
 
-	existingProblem, err := b.db.GetProblem(context.Background(), problemID)
+	// Get the existing problem
+	existing, err := b.repo.GetProblem(context.Background(), problemID)
 	if err != nil {
-		log.Error().Err(err).Int("problem_id", problemID).Msg("Failed to get problem for editing")
-		return errorResponse(fmt.Sprintf("Could not find problem with ID %d to edit.", problemID)), nil
+		log.Error().Err(err).Uint("id", problemID).Msg("Failed to get problem for editing")
+		return errorResponse(fmt.Sprintf("Problem with ID %d not found or you don't have permission to edit it.", problemID)), nil
 	}
 
-	// Create a copy to avoid modifying the fetched problem directly
-	updatedProblem := *existingProblem
+	// Check if the user is the owner of the problem
+	if existing.UserID != i.Member.User.ID {
+		return errorResponse("You don't have permission to edit this problem."), nil
+	}
 
+	// Update fields that are specified
 	if nameOpt, ok := optionMap["name"]; ok {
-		updatedProblem.ProblemName = nameOpt.StringValue()
-	}
-	if linkOpt, ok := optionMap["link"]; ok {
-		updatedProblem.Link = linkOpt.StringValue()
+		existing.ProblemName = nameOpt.StringValue()
 	}
 	if difficultyOpt, ok := optionMap["difficulty"]; ok {
-		updatedProblem.Difficulty = difficultyOpt.StringValue()
+		existing.Difficulty = difficultyOpt.StringValue()
 	}
 	if categoryOpt, ok := optionMap["category"]; ok {
-		updatedProblem.Category = categoryOpt.StringValue()
+		existing.Category = categoryOpt.StringValue()
 	}
 	if statusOpt, ok := optionMap["status"]; ok {
-		updatedProblem.Status = statusOpt.StringValue()
+		existing.Status = statusOpt.StringValue()
+	}
+	if linkOpt, ok := optionMap["link"]; ok {
+		existing.Link = linkOpt.StringValue()
+	}
+	if notesOpt, ok := optionMap["notes"]; ok {
+		existing.Notes = notesOpt.StringValue()
+	}
+	if tagsOpt, ok := optionMap["tags"]; ok {
+		tagStrings := strings.Split(tagsOpt.StringValue(), ",")
+		existing.Tags = make([]string, 0, len(tagStrings))
+		for i := range tagStrings {
+			tag := strings.TrimSpace(tagStrings[i])
+			if tag != "" {
+				existing.Tags = append(existing.Tags, tag)
+			}
+		}
 	}
 	if solvedAtOpt, ok := optionMap["solved_at"]; ok {
 		solvedAt, err := time.Parse("2006-01-02", solvedAtOpt.StringValue())
 		if err != nil {
 			return errorResponse(ErrInvalidDateFormat.Error()), nil
 		}
-		updatedProblem.SolvedAt = solvedAt
-	}
-	if tagsOpt, ok := optionMap["tags"]; ok {
-		tagStrings := strings.Split(tagsOpt.StringValue(), ",")
-		var tags []string
-		for i := range tagStrings {
-			tagStrings[i] = strings.TrimSpace(tagStrings[i])
-			if tagStrings[i] != "" {
-				tags = append(tags, tagStrings[i])
-			}
-		}
-		updatedProblem.Tags = tags
-	}
-	if notesOpt, ok := optionMap["notes"]; ok {
-		updatedProblem.Notes = notesOpt.StringValue()
+		existing.SolvedAt = solvedAt
 	}
 
-	updatedProblem.UserID = i.Member.User.ID // Ensure user ID is correct
-
-	err = b.db.UpdateProblem(context.Background(), &updatedProblem)
-	if err != nil {
-		log.Error().Err(err).Int("problem_id", problemID).Msg("Failed to update problem")
-		return errorResponse(fmt.Sprintf("Failed to update problem with ID %d.", problemID)), nil
+	// Update the problem
+	if err := b.repo.UpdateProblem(context.Background(), existing); err != nil {
+		log.Error().Err(err).Uint("id", problemID).Msg("Failed to update problem")
+		return errorResponse("Failed to update problem in the database."), nil
 	}
 
-	return messageResponse(fmt.Sprintf("Successfully updated problem '%s' (ID: %d)!", updatedProblem.ProblemName, problemID)), nil
+	return messageResponse(fmt.Sprintf("Successfully updated problem '%s'!", existing.ProblemName)), nil
 }
 
 func (b *Bot) handleDeleteCommand(s *discordgo.Session, i *discordgo.InteractionCreate) (*discordgo.InteractionResponse, error) {
@@ -245,62 +281,56 @@ func (b *Bot) handleDeleteCommand(s *discordgo.Session, i *discordgo.Interaction
 		optionMap[opt.Name] = opt
 	}
 
-	idOpt, ok := optionMap["id"]
-	if !ok {
-		return errorResponse("Missing problem ID to delete."), nil
-	}
-	problemID := int(idOpt.IntValue())
+	problemID := uint(optionMap["id"].IntValue())
 
-	err := b.db.DeleteProblem(context.Background(), problemID)
+	// Get the problem to verify ownership
+	problem, err := b.repo.GetProblem(context.Background(), problemID)
 	if err != nil {
-		log.Error().Err(err).Int("problem_id", problemID).Msg("Failed to delete problem")
-		return errorResponse(fmt.Sprintf("Failed to delete problem with ID %d.", problemID)), nil
+		log.Error().Err(err).Uint("id", problemID).Msg("Failed to get problem for deletion")
+		return errorResponse(fmt.Sprintf("Problem with ID %d not found or you don't have permission to delete it.", problemID)), nil
 	}
 
-	return messageResponse(fmt.Sprintf("Successfully deleted problem with ID %d!", problemID)), nil
+	// Check if the user is the owner of the problem
+	if problem.UserID != i.Member.User.ID {
+		return errorResponse("You don't have permission to delete this problem."), nil
+	}
+
+	// Delete the problem
+	if err := b.repo.DeleteProblem(context.Background(), problemID); err != nil {
+		log.Error().Err(err).Uint("id", problemID).Msg("Failed to delete problem")
+		return errorResponse("Failed to delete problem from the database."), nil
+	}
+
+	return messageResponse(fmt.Sprintf("Successfully deleted problem '%s'!", problem.ProblemName)), nil
 }
 
-func (b *Bot) handleStatsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) (*discordgo.InteractionResponse, error) {
-	stats, err := b.db.GetUserStats(context.Background(), i.Member.User.ID)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get user stats")
-		return errorResponse("Failed to retrieve your statistics."), nil
-	}
+// Helper functions
 
-	if stats == nil {
-		return messageResponse("No statistics found for you yet. Start adding problems!"), nil
+// truncateString truncates a string to max length and adds ellipsis if needed
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
 	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Your LeetCode Statistics:\n"))
-	sb.WriteString(fmt.Sprintf("Total Solved: %d\n", stats.TotalSolved))
-	sb.WriteString(fmt.Sprintf("Needed Hint: %d\n", stats.TotalNeededHint))
-	sb.WriteString(fmt.Sprintf("Stuck: %d\n", stats.TotalStuck))
-	sb.WriteString(fmt.Sprintf("Easy: %d\n", stats.EasyCount))
-	sb.WriteString(fmt.Sprintf("Medium: %d\n", stats.MediumCount))
-	sb.WriteString(fmt.Sprintf("Hard: %d\n", stats.HardCount))
-	if stats.LastActiveAt != nil {
-		sb.WriteString(fmt.Sprintf("Last Active: %s\n", stats.LastActiveAt.Format("2006-01-02 15:04:05 MST")))
-	}
-
-	return messageResponse(sb.String()), nil
+	return s[:maxLen-3] + "..."
 }
 
+// errorResponse creates a ephemeral error response
+func errorResponse(content string) *discordgo.InteractionResponse {
+	return &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: "Error: " + content,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	}
+}
+
+// messageResponse creates a standard message response
 func messageResponse(content string) *discordgo.InteractionResponse {
 	return &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: content,
-		},
-	}
-}
-
-func errorResponse(content string) *discordgo.InteractionResponse {
-	return &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	}
 }
